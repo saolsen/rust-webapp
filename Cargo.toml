@@ -1,0 +1,7 @@
+[package]
+name = "webapp"
+version = "0.1.0"
+authors = ["Stephen Olsen <steve.olsen@gmail.com>"]
+
+[dependencies]
+actix-web = "0.7.4"
