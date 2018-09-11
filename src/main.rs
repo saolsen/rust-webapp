@@ -1,15 +1,4 @@
-// Try and get a rust web app working.
-// logging
-// errors
-// serve pages
-// database
-// deployment
-// tracing
-// metrics
-
-// Need to figure out how async handlers work and get the postgres stuff working too.
-
-#![recursion_limit = "1024"]
+//#![recursion_limit = "1024"]
 
 //#[macro_use]
 //extern crate error_chain;
@@ -153,22 +142,7 @@ impl Handler<GetWidgets> for DbExecutor {
 
 struct AppState {
     db: Addr<DbExecutor>,
-    store: Arc<Mutex<Vec<String>>>
 }
-
-// So lets start with like 4 pages. I should also be able to maybe do this with just in memory state.
-
-// show widgets
-// add widget form
-// delete widget
-
-/* fn get_widgets() -> impl Future<Item=u32, Error = Box<Error>> {
-    Ok(100)
-}
-
-fn show_widgets(req: &HttpRequest<AppState>) -> Box<Future<Item=String, Error=String>> {
-    get_widgets().responder()
-} */
 
 // can we just do impl AsyncResponder too?
 fn html(body: &str) -> HttpResponse {
@@ -186,24 +160,6 @@ fn widget(name: &str) -> String {
     format!(r#"<li>{}<form action="/delete_widget" method="post"><input type="hidden" name="name" id="name" value="{}"><input type="submit" value="Delete"></form></li>"#, name, name)
 }
 
-fn get_widgets(req: &HttpRequest<AppState>) -> impl Responder {
-    let widgets;
-    {
-        let guard = req.state().store.lock().unwrap();
-        widgets = guard.iter().map(|s| widget(s)).collect::<Vec<String>>().concat();
-    }
-    html(format!(r#"
-    <ul>
-        {}
-    </ul>
-    <form action="/create_widget" method="post">
-        name:<br>
-        <input type="text" name="name"><br>
-        <input type="submit" value="Create Widget">
-    </form>
-    "#, widgets).as_str())
-}
-
 #[derive(Deserialize)]
 pub struct NewWidgetForm {
     name: String,
@@ -212,14 +168,6 @@ pub struct NewWidgetForm {
 #[derive(Deserialize)]
 pub struct DeleteWidgetForm {
     name: String,
-}
-
-fn create_widget((params, state): (Form<NewWidgetForm>, State<AppState>)) -> Result<HttpResponse> {
-    {
-        let mut widgets = state.store.lock().unwrap();
-        widgets.push(params.name.clone());
-    }
-    Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
 }
 
 fn a_create_widget((state, params): (State<AppState>, Form<NewWidgetForm>),) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
@@ -232,15 +180,7 @@ fn a_create_widget((state, params): (State<AppState>, Form<NewWidgetForm>),) -> 
         .responder()
 }
 
-fn delete_widget((params, state): (Form<DeleteWidgetForm>, State<AppState>)) -> Result<HttpResponse> {
-    {
-        let mut widgets = state.store.lock().unwrap();
-        *widgets = widgets.clone().into_iter().filter(|w| *w != params.name).collect();
-    }
-    Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
-}
-
-fn a_delete_widget((state, params): (State<AppState>, Form<NewWidgetForm>),) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
+fn a_delete_widget((state, params): (State<AppState>, Form<DeleteWidgetForm>),) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
     state.db.send(DeleteWidget{name: params.name.clone()})
         .from_err()
         .and_then(|res| match res {
@@ -273,33 +213,9 @@ fn a_get_widgets(req: &HttpRequest<AppState>) -> Box<Future<Item=HttpResponse, E
         .responder()
 }
 
-fn greet(req: &HttpRequest<AppState>) -> Box<Future<Item=String, Error=MailboxError>> {
-    let name = &req.match_info().get("name").unwrap_or("world");
-
-    req.state().db.send(CreateWidget{name: name.to_string()})
-        .from_err()
-        .and_then(|res| {
-            match res {
-                Ok(user) => Ok(format!("Hello {}", user.name)),
-                Err(_) => Ok("Goodbye".to_string())
-            }
-        })
-        .responder()
-
-    // the error returned by a handler has to be something that can be turned into an http response.
-    // so if I wanna do custom errors I have to have a translator thing.
-    // I should probably have a thing that dumps to sentry or logs or something.
-}
-
-use std::sync::{Arc, Mutex};
-
 // @NOTE: Going to try a mutex protected list shared by all the threads.
 
-fn run() -> Result<(), String> {
-
-    // NOTE: Instead of a mutex you could do global state by having an actor that controls it!
-    let data = Arc::new(Mutex::new(vec!["one".to_string(), "two".to_string(), "three".to_string()]));
-
+fn run() -> Result<(), String> {    
     dotenv().ok();
     let port = env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -316,7 +232,7 @@ fn run() -> Result<(), String> {
     // @TODO: Logger
     println!("Starting server on port {}", port);
     server::new(move || {
-        App::with_state(AppState{db: addr.clone(), store: data.clone()})
+        App::with_state(AppState{db: addr.clone()})
             .resource("/", |r| r.route().f(index))
             //.resource("/widgets", |r| r.f(get_widgets))
             .resource("/widgets", |r| r.route().a(a_get_widgets))
@@ -326,7 +242,6 @@ fn run() -> Result<(), String> {
             .resource("/delete_widget", |r| {
                 r.method(http::Method::POST).with(a_delete_widget)
             })
-            .resource("/greet/{name}", |r| r.route().a(greet))
     }).bind(format!("0.0.0.0:{}", port))
         .expect("Can not bind to port")
         .run();
@@ -338,18 +253,5 @@ fn run() -> Result<(), String> {
 
 
 fn main() {
-    run();
-    /* if let Err(ref e) = run() {
-        println!("error: {}", e);
-
-        for e in e.iter().skip(1) {
-            println!("caused by: {}", e);
-        }
-
-        if let Some(backtrace) = e.backtrace() {
-            println!("backtrace: {:?}", backtrace);
-        }
-
-        ::std::process::exit(1);
-    } */
+    run().expect("Error");
 }
