@@ -152,7 +152,7 @@ fn create_widget((params, state): (Form<NewWidget>, State<AppState>)) -> Result<
         let mut widgets = state.store.lock().unwrap();
         widgets.push(params.name.clone());
     }
-    Ok(html(format!("Created {}", params.name).as_str()))
+    Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
 }
 
 fn delete_widget((params, state): (Form<DeleteWidget>, State<AppState>)) -> Result<HttpResponse> {
@@ -160,7 +160,7 @@ fn delete_widget((params, state): (Form<DeleteWidget>, State<AppState>)) -> Resu
         let mut widgets = state.store.lock().unwrap();
         *widgets = widgets.clone().into_iter().filter(|w| *w != params.name).collect();
     }
-    Ok(html(format!("Deleted {}", params.name).as_str()))
+    Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
 }
 
 fn greet(req: &HttpRequest<AppState>) -> Box<Future<Item=String, Error=MailboxError>> {
