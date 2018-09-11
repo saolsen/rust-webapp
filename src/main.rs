@@ -222,12 +222,32 @@ fn create_widget((params, state): (Form<NewWidgetForm>, State<AppState>)) -> Res
     Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
 }
 
+fn a_create_widget((state, params): (State<AppState>, Form<NewWidgetForm>),) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
+    state.db.send(CreateWidget{name: params.name.clone()})
+        .from_err()
+        .and_then(|res| match res {
+            Ok(_) => Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting")),
+            Err(_) => Ok(HttpResponse::InternalServerError().into())
+        })
+        .responder()
+}
+
 fn delete_widget((params, state): (Form<DeleteWidgetForm>, State<AppState>)) -> Result<HttpResponse> {
     {
         let mut widgets = state.store.lock().unwrap();
         *widgets = widgets.clone().into_iter().filter(|w| *w != params.name).collect();
     }
     Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
+}
+
+fn a_delete_widget((state, params): (State<AppState>, Form<NewWidgetForm>),) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
+    state.db.send(DeleteWidget{name: params.name.clone()})
+        .from_err()
+        .and_then(|res| match res {
+            Ok(_) => Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting")),
+            Err(_) => Ok(HttpResponse::InternalServerError().into())
+        })
+        .responder()
 }
 
 fn a_get_widgets(req: &HttpRequest<AppState>) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
@@ -301,10 +321,10 @@ fn run() -> Result<(), String> {
             //.resource("/widgets", |r| r.f(get_widgets))
             .resource("/widgets", |r| r.route().a(a_get_widgets))
             .resource("/create_widget", |r| {
-                r.method(http::Method::POST).with(create_widget)
+                r.method(http::Method::POST).with(a_create_widget)
             })
             .resource("/delete_widget", |r| {
-                r.method(http::Method::POST).with(delete_widget)
+                r.method(http::Method::POST).with(a_delete_widget)
             })
             .resource("/greet/{name}", |r| r.route().a(greet))
     }).bind(format!("0.0.0.0:{}", port))
