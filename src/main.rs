@@ -230,6 +230,29 @@ fn delete_widget((params, state): (Form<DeleteWidgetForm>, State<AppState>)) -> 
     Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
 }
 
+fn a_get_widgets(req: &HttpRequest<AppState>) -> Box<Future<Item=HttpResponse, Error=actix_web::Error>> {
+    req.state().db.send(GetWidgets)
+        .from_err()
+        .and_then(|res| match res {
+            Ok(widgets_data) => {
+                let widgets = widgets_data.iter().map(|s| widget(&s.name)).collect::<Vec<String>>().concat();
+                let body = html(format!(r#"
+                <ul>
+                    {}
+                </ul>
+                <form action="/create_widget" method="post">
+                    name:<br>
+                    <input type="text" name="name"><br>
+                    <input type="submit" value="Create Widget">
+                </form>
+                "#, widgets).as_str());
+                Ok(body)
+            },
+            Err(_) => Ok(HttpResponse::InternalServerError().into())
+        })
+        .responder()
+}
+
 fn greet(req: &HttpRequest<AppState>) -> Box<Future<Item=String, Error=MailboxError>> {
     let name = &req.match_info().get("name").unwrap_or("world");
 
@@ -275,7 +298,8 @@ fn run() -> Result<(), String> {
     server::new(move || {
         App::with_state(AppState{db: addr.clone(), store: data.clone()})
             .resource("/", |r| r.route().f(index))
-            .resource("/widgets", |r| r.f(get_widgets))
+            //.resource("/widgets", |r| r.f(get_widgets))
+            .resource("/widgets", |r| r.route().a(a_get_widgets))
             .resource("/create_widget", |r| {
                 r.method(http::Method::POST).with(create_widget)
             })
