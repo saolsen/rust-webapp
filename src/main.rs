@@ -7,19 +7,19 @@
 // tracing
 // metrics
 
+// Need to figure out how async handlers work and get the postgres stuff working too.
+
 #![recursion_limit = "1024"]
 
 //#[macro_use]
 //extern crate error_chain;
-
+#[macro_use]
+extern crate serde_derive;
 extern crate actix;
 extern crate actix_web;
 extern crate diesel;
 extern crate dotenv;
 extern crate futures;
-
-#[macro_use]
-extern crate serde_derive;
 
 //use errors::*;
 
