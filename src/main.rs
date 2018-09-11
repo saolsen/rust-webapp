@@ -17,6 +17,7 @@
 extern crate serde_derive;
 extern crate actix;
 extern crate actix_web;
+#[macro_use]
 extern crate diesel;
 extern crate dotenv;
 extern crate futures;
@@ -34,7 +35,7 @@ extern crate futures;
 use std::env;
 
 use actix::prelude::*;
-use actix_web::{http, middleware, server, App, Responder, HttpRequest, HttpResponse, AsyncResponder, FutureResponse, Path, State, http::ContentEncoding, Form, Result};
+use actix_web::{error, http, middleware, server, App, Responder, HttpRequest, HttpResponse, AsyncResponder, FutureResponse, Path, State, http::ContentEncoding, Form, Result};
 
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
@@ -47,9 +48,24 @@ pub type ConnectionType = PgConnection;
 pub type DbConnection = PooledConnection<ConnectionManager<ConnectionType>>;
 pub type DbPool = Pool<ConnectionManager<ConnectionType>>;
 
-/* pub fn connection(pool: &DbPool) -> Result<DbConnection, &'static str> {
-    Ok(pool.get()?)
-} */
+// models
+mod schema;
+use schema::widgets;
+
+#[derive(Queryable)]
+pub struct Widget {
+    pub name: String
+}
+
+#[derive(Insertable)]
+#[table_name = "widgets"]
+pub struct NewWidget<'a> {
+    pub name: &'a str
+}
+
+// /models
+
+// db service
 
 pub struct DbExecutor(pub Pool<ConnectionManager<PgConnection>>);
 
@@ -57,32 +73,83 @@ impl Actor for DbExecutor {
     type Context = SyncContext<Self>;
 }
 
-struct User {
+struct CreateWidget {
     name: String,
 }
 
-struct CreateUser {
-    name: String,
+impl Message for CreateWidget {
+    type Result = Result<Widget, actix_web::Error>;
 }
 
-// @TODO: Use the error thing.
-impl Message for CreateUser {
-    type Result = Result<User, String>;
-}
+impl Handler<CreateWidget> for DbExecutor {
+    type Result = Result<Widget, actix_web::Error>;
 
-impl Handler<CreateUser> for DbExecutor {
-    type Result = Result<User, String>;
+    fn handle(&mut self, msg: CreateWidget, _: &mut Self::Context) -> Self::Result {
+        use schema::widgets::dsl::*;
+        
+        let new_widget = NewWidget{name: &msg.name};
+        let conn = &*self.0.get().unwrap();
 
-    fn handle(&mut self, msg: CreateUser, _: &mut Self::Context) -> Self::Result {
-        // Do the database shit here.
-        /* diesel::insert_into(users)
-            .values(&new_user)
-            .execute(&self.0)
-            .expect("Error inserting person"); */
+        diesel::insert_into(widgets)
+            .values(&new_widget)
+            .execute(conn)
+            .map_err(|_| error::ErrorInternalServerError("Error inserting widget"))?;
 
-        Ok(User{name: "Steve".to_string()})
+        let mut items = widgets
+            .filter(name.eq(&msg.name))
+            .load::<Widget>(conn)
+            .map_err(|_| error::ErrorInternalServerError("Error loading widget"))?;
+
+        Ok(items.pop().unwrap())
     }
 }
+
+struct DeleteWidget {
+    name: String,
+}
+
+impl Message for DeleteWidget {
+    type Result = Result<(), actix_web::Error>;
+}
+
+impl Handler<DeleteWidget> for DbExecutor {
+    type Result = Result<(), actix_web::Error>;
+
+    fn handle(&mut self, msg: DeleteWidget, _: &mut Self::Context) -> Self::Result {
+        use schema::widgets::dsl::*;
+
+        let conn = &*self.0.get().unwrap();
+
+        diesel::delete(widgets.filter(name.eq(msg.name)))
+            .execute(conn)
+            .map_err(|_| error::ErrorInternalServerError("Couldn't delete widget"))?;
+
+        Ok(())
+    }
+}
+
+struct GetWidgets;
+
+impl Message for GetWidgets {
+    type Result = Result<Vec<Widget>, actix_web::Error>;
+}
+
+impl Handler<GetWidgets> for DbExecutor {
+    type Result = Result<Vec<Widget>, actix_web::Error>;
+
+    fn handle(&mut self, msg: GetWidgets, _: &mut Self::Context) -> Self::Result {
+        use schema::widgets::dsl::*;
+
+        let conn = &*self.0.get().unwrap();
+
+        let results = widgets.load::<Widget>(conn)
+            .map_err(|_| error::ErrorInternalServerError("Error fetching widgets"))?;
+
+        Ok(results)
+    }
+}
+
+// /db service
 
 struct AppState {
     db: Addr<DbExecutor>,
@@ -138,16 +205,16 @@ fn get_widgets(req: &HttpRequest<AppState>) -> impl Responder {
 }
 
 #[derive(Deserialize)]
-pub struct NewWidget {
+pub struct NewWidgetForm {
     name: String,
 }
 
 #[derive(Deserialize)]
-pub struct DeleteWidget {
+pub struct DeleteWidgetForm {
     name: String,
 }
 
-fn create_widget((params, state): (Form<NewWidget>, State<AppState>)) -> Result<HttpResponse> {
+fn create_widget((params, state): (Form<NewWidgetForm>, State<AppState>)) -> Result<HttpResponse> {
     {
         let mut widgets = state.store.lock().unwrap();
         widgets.push(params.name.clone());
@@ -155,7 +222,7 @@ fn create_widget((params, state): (Form<NewWidget>, State<AppState>)) -> Result<
     Ok(HttpResponse::TemporaryRedirect().header("Location", "/widgets").body("redirecting"))
 }
 
-fn delete_widget((params, state): (Form<DeleteWidget>, State<AppState>)) -> Result<HttpResponse> {
+fn delete_widget((params, state): (Form<DeleteWidgetForm>, State<AppState>)) -> Result<HttpResponse> {
     {
         let mut widgets = state.store.lock().unwrap();
         *widgets = widgets.clone().into_iter().filter(|w| *w != params.name).collect();
@@ -164,10 +231,9 @@ fn delete_widget((params, state): (Form<DeleteWidget>, State<AppState>)) -> Resu
 }
 
 fn greet(req: &HttpRequest<AppState>) -> Box<Future<Item=String, Error=MailboxError>> {
-    // This can panic, don't do that.
-    let name = &req.match_info()["name"];
+    let name = &req.match_info().get("name").unwrap_or("world");
 
-    req.state().db.send(CreateUser{name: name.to_owned()})
+    req.state().db.send(CreateWidget{name: name.to_string()})
         .from_err()
         .and_then(|res| {
             match res {
@@ -187,6 +253,8 @@ use std::sync::{Arc, Mutex};
 // @NOTE: Going to try a mutex protected list shared by all the threads.
 
 fn run() -> Result<(), String> {
+
+    // NOTE: Instead of a mutex you could do global state by having an actor that controls it!
     let data = Arc::new(Mutex::new(vec!["one".to_string(), "two".to_string(), "three".to_string()]));
 
     dotenv().ok();
@@ -214,6 +282,7 @@ fn run() -> Result<(), String> {
             .resource("/delete_widget", |r| {
                 r.method(http::Method::POST).with(delete_widget)
             })
+            .resource("/greet/{name}", |r| r.route().a(greet))
     }).bind(format!("0.0.0.0:{}", port))
         .expect("Can not bind to port")
         .run();
